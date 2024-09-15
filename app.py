@@ -1,7 +1,7 @@
 import re
 import os
 import json
-import requests
+import requests 
 from flask_cors import CORS
 from flask import Flask, request, redirect, jsonify, session
 from flask_session import Session
@@ -55,7 +55,7 @@ def login():
 def callback():
     if 'error' in request.args:
         return jsonify({"error": request.args['error']})
-    
+
     if 'code' in request.args:
         req_body = {
             'code': request.args['code'],
@@ -64,13 +64,13 @@ def callback():
             'client_id': CLIENT_ID,
             'client_secret': CLIENT_SECRET
         }
-        
+
         response = requests.post(TOKEN_URL, data=req_body)
         token_info = response.json()
-        
+
         session['access_token'] = token_info['access_token']
         return redirect('http://localhost:3000/app')  # Redirect to the main app page
-    
+
     return jsonify({"error": "Authorization failed"})
 
 @app.route('/check_auth')
@@ -88,52 +88,47 @@ def fetch_current_song():
         'Authorization': f"Bearer {access_token}"
     }
     response = requests.get(f"{API_BASE_URL}me/player/currently-playing", headers=headers)
-    
+
     # Log the response for debugging
     print("Response status code:", response.status_code)
-    
+
     if response.status_code == 204:
         print("No song currently playing")
         return None
-    
+
     if response.status_code == 401:
         print("Access token expired")
         session.pop('access_token', None)
         return "expired"
-    
+
     try:
         return response.json()
     except requests.exceptions.JSONDecodeError:
         print("Error decoding JSON response")
         return {}
 
-def fetch_lyrics(track_id):
-    response = requests.get(f'https://spotify-lyric-api.herokuapp.com/?trackid={track_id}')
-    print(f"Lyrics response: {response}")
-    
-    if response.status_code != 200:
-        print(f"Error fetching lyrics: {response.status_code}")
-        return {"lines": []}  # Return an empty list or handle as needed
-    
-    try:
-        return response.json()
-    except requests.exceptions.JSONDecodeError:
-        print("Error decoding JSON response")
-        return {"lines": []}  # Return an empty list or handle as needed
-
 def translate_lyrics(lyrics, target_language):
-    translated_lyrics = []
-    for line in lyrics:
+    # Split lyrics into lines
+    lyrics_lines = lyrics.split('\n')
+    translated_lyrics_lines = []
+    for line in lyrics_lines:
+        if line.strip() == '':
+            # Empty line (stanza break), keep it
+            translated_lyrics_lines.append('')
+            continue
         response = requests.post('https://api-free.deepl.com/v2/translate', data={
             'auth_key': DEEPL_API_KEY,
             'text': line,
             'target_lang': target_language
         })
         if response.status_code == 200:
-            translated_lyrics.append(response.json()['translations'][0]['text'])
+            translated_line = response.json()['translations'][0]['text']
+            translated_lyrics_lines.append(translated_line)
         else:
             print(f"Error translating line: {line}, status code: {response.status_code}")
-            translated_lyrics.append(line)  # Fallback to original line if translation fails
+            translated_lyrics_lines.append(line)  # Fallback to original line if translation fails
+    # Join translated lines back into a string
+    translated_lyrics = '\n'.join(translated_lyrics_lines)
     return translated_lyrics
 
 def search_genius_song(song_title, artist_name):
@@ -143,11 +138,11 @@ def search_genius_song(song_title, artist_name):
     search_url = f"{GENIUS_API_BASE_URL}/search"
     params = {'q': f"{song_title} {artist_name}"}
     response = requests.get(search_url, headers=headers, params=params)
-    
+
     if response.status_code != 200:
         print(f"Error searching Genius: {response.status_code}")
         return None
-    
+
     try:
         return response.json()
     except requests.exceptions.JSONDecodeError:
@@ -155,12 +150,12 @@ def search_genius_song(song_title, artist_name):
         return None
 
 def fetch_genius_url(song_title, artist_name):
-    print("Attemptibng GENIUS Lyrics")
+    print("Attempting to fetch Genius Lyrics")
     search_results = search_genius_song(song_title, artist_name)
     print(f"Searched for {song_title} by {artist_name}")
     if not search_results or 'response' not in search_results or 'hits' not in search_results['response']:
         return None
-    
+
     # Get the first hit
     song_info = search_results['response']['hits'][0]['result']
     song_url = song_info['url']
@@ -170,134 +165,76 @@ def fetch_genius_url(song_title, artist_name):
 
 def fetch_genius_lyrics(song_url):
     lyrics_page = requests.get(song_url)
-    
-    soup = BeautifulSoup(lyrics_page.content, 'html.parser')
-    # lyrics_div = soup.find('div', {'data-lyrics-container': 'true'})
-    lyrics_div = soup.find_all('div', {'data-lyrics-container': 'true', 'class': re.compile(r'^Lyrics__Container.*')})
 
-    if not lyrics_div:
+    soup = BeautifulSoup(lyrics_page.content, 'html.parser')
+    lyrics_divs = soup.find_all('div', {'data-lyrics-container': 'true'})
+
+    if not lyrics_divs:
         print("Lyrics div not found")
         return None
-    print("Lyrics div:", lyrics_div)  # Print the found lyrics div
-    lyrics = []
-    for div in lyrics_div:
-        for element in div.children:
+    print("Lyrics divs found:", len(lyrics_divs))
+
+    lyrics = ''
+    for div in lyrics_divs:
+        for element in div.contents:
             if isinstance(element, str):
-                lyrics.append(element.strip())
+                lyrics += element
             elif element.name == 'br':
-                lyrics.append('\n')
-            elif element.name == 'i':
-                lyrics.append(element.get_text(strip=True))
-            elif element.name == 'a':
-                lyrics.append(element.get_text(strip=True))
+                lyrics += '\n'
             else:
-                lyrics.append(element.get_text(strip=True, separator='\n'))
-    
-    lyrics_text = "".join(lyrics).strip()
-    lyrics_lines = lyrics_text.split('\n')
-    
-    cleaned_lyrics = [line for line in lyrics_lines if line.strip()]
-    
-    return cleaned_lyrics
+                lyrics += element.get_text()
+        lyrics += '\n\n'  # Add stanza break
 
-def fetch_genius_lyrics2(song_url):
-    # Fetch the lyrics from the song URL
-    lyrics_page = requests.get(song_url)
-    if lyrics_page.status_code != 200:
-        print(f"Error fetching Genius lyrics page: {lyrics_page.status_code}")
-        return None
-    
-    # Parse the lyrics page
-    soup = BeautifulSoup(lyrics_page.content, 'html.parser')
-    
-    lyrics_div = soup.find('div', {'data-lyrics-container': 'true', 'class': re.compile(r'^Lyrics__Container.*')})
-    if not lyrics_div:
-        print("Lyrics div not found on Genius page")
-        return None
-    
-    print("Lyrics div:", lyrics_div)  # Print the found lyrics div
-    
-    # Extract the text while preserving the structure
-    lyrics = []
-    for element in lyrics_div.descendants:
-        if isinstance(element, str):
-            lyrics.append(element.strip())
-        elif element.name == 'br':
-            lyrics.append('\n')
-        elif element.name in ['a', 'i']:
-            lyrics.append(element.get_text(separator="\n").strip())
-    
-    # Join the lyrics and split into lines
-    lyrics_text = "".join(lyrics).strip()
-    lyrics_lines = lyrics_text.split('\n')
-    
-    # Remove empty strings
-    cleaned_lyrics = [line for line in lyrics_lines if line.strip()]
-    
-    return cleaned_lyrics
+    lyrics = lyrics.strip()
+    return lyrics
 
-@app.route('/current_song_with_lyrics')
-def get_current_song_with_lyrics():
+@app.route('/current_song_info')
+def get_current_song_info():
     current_song = fetch_current_song()
     if current_song == "expired":
         return redirect('http://localhost:3000/login')  # Redirect to the login page
-    
+
     if not current_song or 'item' not in current_song:
         return jsonify({"error": "No song currently playing"}), 400
-    
-    track_id = current_song['item']['id']
+
     song_title = current_song['item']['name']
     artist_name = ', '.join([artist['name'] for artist in current_song['item']['artists']])
-    
-    lyrics_response = fetch_lyrics(track_id)
-    if not lyrics_response['lines']:
-        genius_lyrics_url = fetch_genius_url(song_title, artist_name)
-        if not genius_lyrics_url:
-            return jsonify({
-                'song': current_song,
-                'song_title': song_title,
-                'artist_name': artist_name,
-                'lyrics': [],
-                'translated_lyrics': [],
-                'error': "Song not found on Genius"
-            }), 404
-        
-        genius_lyrics = fetch_genius_lyrics(genius_lyrics_url)
-        if not genius_lyrics:
-            return jsonify({
-                'song': current_song,
-                'song_title': song_title,
-                'artist_name': artist_name,
-                'lyrics': [],
-                'translated_lyrics': [],
-                'error': "Lyrics not found on Genius"
-            }), 404
-        
-        target_language = request.args.get('lang', 'EN')
-        print(f"Genius Lyrics: {genius_lyrics}")
-        translated_lyrics = translate_lyrics(genius_lyrics, target_language)
-        print(f"Translated Lyrics: {translated_lyrics}")
-        return jsonify({
-            'song': current_song,
-            'song_title': song_title,
-            'artist_name': artist_name,
-            'lyrics': genius_lyrics,
-            'translated_lyrics': translated_lyrics
-        })
-    
-    target_language = request.args.get('lang', 'EN')
-    translated_lyrics = translate_lyrics(lyrics_response['lines'], target_language)
 
-    print(f"Translated Lyrics: {translated_lyrics}")
     return jsonify({
-        'song': current_song,
         'song_title': song_title,
-        'artist_name': artist_name,
-        'lyrics': lyrics_response['lines'],
-        'translated_lyrics': translated_lyrics
+        'artist_name': artist_name
     })
 
+@app.route('/lyrics')
+def get_lyrics():
+    song_title = request.args.get('song_title')
+    artist_name = request.args.get('artist_name')
+    if not song_title or not artist_name:
+        return jsonify({"error": "Song title and artist name are required"}), 400
+
+    # Fetch lyrics from Genius
+    genius_lyrics_url = fetch_genius_url(song_title, artist_name)
+    if not genius_lyrics_url:
+        return jsonify({'lyrics': '', 'error': "Song not found on Genius"}), 404
+
+    genius_lyrics = fetch_genius_lyrics(genius_lyrics_url)
+    if not genius_lyrics:
+        return jsonify({'lyrics': '', 'error': "Lyrics not found on Genius"}), 404
+
+    # Return the lyrics as a string
+    return jsonify({'lyrics': genius_lyrics})
+
+@app.route('/translate_lyrics', methods=['POST'])
+def translate_lyrics_endpoint():
+    data = request.get_json()
+    lyrics = data.get('lyrics', '')
+    target_language = data.get('lang', 'EN')
+
+    if not lyrics:
+        return jsonify({"error": "Lyrics are required"}), 400
+
+    translated_lyrics = translate_lyrics(lyrics, target_language)
+    return jsonify({'translated_lyrics': translated_lyrics})
+
 if __name__ == '__main__':
-    app.run(debug=True, port=5001)
-
-
+    app.run(debug=True, host='0.0.0.0', port=5001)
